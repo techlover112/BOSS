@@ -64,6 +64,7 @@ npts.get('/p01/tasksheet/:id/:bossAppId/:taskId', async (request: express.Reques
 			TitleId: task.title_id,
 			TaskId: task.id,
 			ServiceStatus: task.status,
+			Interval: task.interval,
 			Files: {
 				File: files.map(f => buildFile(task, f, mode === 'attr'))
 			}
@@ -104,6 +105,7 @@ npts.get('/p01/tasksheet/:id/:bossAppId/:taskId/:fileName', async (request: expr
 			TitleId: task.title_id,
 			TaskId: task.id,
 			ServiceStatus: task.status,
+			Interval: task.interval,
 			Files: {
 				File: buildFile(task, file, mode === 'attr')
 			}
