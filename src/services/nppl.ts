@@ -1,190 +1,77 @@
-import xmlbuilder from 'xmlbuilder';
-import moment from 'moment';
-import express from 'express';
-import { config, disabledFeatures } from '@/config-manager';
-import { restrictHostnames } from '@/middleware/host-limit';
-import type { PolicyList } from '@/types/common/policylist';
+import express from "express";
+import xmlbuilder from "xmlbuilder";
+import moment from "moment";
+import { PolicyList } from "../models/policy-list";
 
 const nppl = express.Router();
 
-nppl.get([
-	'/p01/policylist/:majorVersion/:countryCode',
-	'/p01/policylist/:consoleType/:majorVersion/:countryCode'
-], (request, response) => {
-	const { majorVersion, countryCode } = request.params;
-	const consoleType = request.params.consoleType || '0'; // * Default to the 3DS
+nppl.get("/p01/policylist/:consoleType/:countryCode/:majorVersion", async (request, response) => {
+  const { consoleType, countryCode, majorVersion } = request.params;
 
-	let policylist;
+  if (consoleType !== "0" && consoleType !== "1") {
+    response.sendStatus(500);
+    return;
+  }
 
-	if (consoleType === '0') {
-		policylist = get3DSPolicyList(countryCode, majorVersion);
-	} else if (consoleType === '1') {
-		policylist = getWiiUPolicyList(countryCode, majorVersion);
-	} else {
-		response.sendStatus(500);
-		return;
-	}
+  const defaultPolicyList = {
+    country_code: countryCode,
+    major_version: Number(majorVersion),
+    list_id: 1891, // Default list version ID
+    default_stop: false,
+    force_version_up: false,
+    priority: [
+      {
+        title_id: "0004003000008f02",
+        task_id: "basho0",
+        level: "HIGH",
+        persistent: true,
+        revive: true
+      }
+    ],
+    updated: Date.now()
+  };
 
-	if (!policylist) {
-		response.sendStatus(404);
-		return;
-	}
+  try {
+    // Atomically find or create the document with fallback defaults
+    const policyDoc = await PolicyList.findOneAndUpdate(
+      {
+        country_code: countryCode,
+        major_version: Number(majorVersion)
+      },
+      {
+        $setOnInsert: defaultPolicyList
+      },
+      {
+        upsert: true,
+        new: true,
+        setDefaultsOnInsert: true
+      }
+    );
 
-	// TODO - Make this more dynamic
-	response.set('Content-Type', 'application/xml; charset=utf-8');
-	response.send(xmlbuilder.create(policylist, { headless: true }).end({ pretty: true }));
+    const policylist = {
+      PolicyList: {
+        MajorVersion: policyDoc.major_version,
+        MinorVersion: 0,
+        ListId: policyDoc.list_id,
+        DefaultStop: policyDoc.default_stop,
+        ForceVersionUp: policyDoc.force_version_up,
+        UpdateTime: moment(Number(policyDoc.updated)).utc().format("YYYY-MM-DDTHH:mm:ss+0000"),
+        Priority: policyDoc.priority.map((p: any) => ({
+          TitleId: p.title_id,
+          TaskId: p.task_id,
+          Level: p.level,
+          Persistent: p.persistent,
+          Revive: p.revive
+        }))
+      }
+    };
+
+    response.set("Content-Type", "application/xml; charset=utf-8");
+    response.send(xmlbuilder.create(policylist, { headless: true }).end({ pretty: true }));
+  } catch (error) {
+    console.error(error);
+    response.sendStatus(500);
+  }
 });
 
-function get3DSPolicyList(countryCode: string, majorVersion: string): { PolicyList: PolicyList } | null {
-	if (majorVersion !== '3') {
-		return null;
-	}
-
-	return {
-		PolicyList: {
-			MajorVersion: Number(majorVersion),
-			MinorVersion: 0,
-			ListId: 1891,
-			DefaultStop: false,
-			ForceVersionUp: false,
-			UpdateTime: moment().utc().format('YYYY-MM-DDTHH:MM:SS+0000'),
-			Priority: [
-				{
-					TitleId: '0004003000008f02',
-					TaskId: 'basho0',
-					Level: 'HIGH',
-					Persistent: true, // TODO - What's this?
-					Revive: true // TODO - What's this?
-				},
-				{
-					TitleId: '000400300000bc00',
-					TaskId: 'OlvNotf',
-					Level: 'HIGH',
-					Persistent: true, // TODO - What's this?
-					Revive: true // TODO - What's this?
-				},
-				{
-					TitleId: '000400300000bd00',
-					TaskId: 'OlvNotf',
-					Level: 'HIGH',
-					Persistent: true, // TODO - What's this?
-					Revive: true // TODO - What's this?
-				},
-				{
-					TitleId: '000400300000be00',
-					TaskId: 'OlvNotf',
-					Level: 'HIGH',
-					Persistent: true, // TODO - What's this?
-					Revive: true // TODO - What's this?
-				},
-				{
-					TitleId: '0004003000008f02',
-					TaskId: 'pl',
-					Level: 'HIGH',
-					Persistent: true, // TODO - What's this?
-					Revive: true // TODO - What's this?
-				},
-				{
-					TitleId: '0004013000003400',
-					TaskId: 'sprelay',
-					Level: disabledFeatures.spr ? 'STOPPED' : 'HIGH',
-					Persistent: true, // TODO - What's this?
-					Revive: true // TODO - What's this?
-				}
-			]
-		}
-	};
-}
-
-function getWiiUPolicyList(countryCode: string, majorVersion: string): { PolicyList: PolicyList } | null {
-	if (majorVersion !== '1') {
-		return null;
-	}
-
-	// TODO - Pull this from the DB and use the country code
-	return {
-		PolicyList: {
-			MajorVersion: Number(majorVersion),
-			MinorVersion: 0,
-			ListId: 1924,
-			DefaultStop: false,
-			ForceVersionUp: false,
-			UpdateTime: moment().utc().format('YYYY-MM-DDTHH:MM:SS+0000'),
-			Priority: [
-				{
-					TitleId: '0005003010016000',
-					TaskId: 'olvinfo',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '0005003010016100',
-					TaskId: 'olvinfo',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '0005003010016200',
-					TaskId: 'olvinfo',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '000500301001600a',
-					TaskId: 'olv1',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '000500301001610a',
-					TaskId: 'olv1',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '000500301001620a',
-					TaskId: 'olv1',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '0005001010040000',
-					TaskId: 'oltopic',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '0005001010040100',
-					TaskId: 'oltopic',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '0005001010040200',
-					TaskId: 'oltopic',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '000500101005a000',
-					TaskId: 'Chat',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '000500101005a100',
-					TaskId: 'Chat',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '000500101005a200',
-					TaskId: 'Chat',
-					Level: 'EXPEDITE'
-				},
-				{
-					TitleId: '000500101004c100',
-					TaskId: 'plog',
-					Level: 'EXPEDITE'
-				}
-			]
-		}
-	};
-}
-
-const router = express.Router();
-
-// 3DS hosts on nppl.c.app
-// WiiU hosts on nppl.app
-router.use(restrictHostnames(config.domains.nppl, nppl));
-
-export default router;
+export default nppl;
