@@ -42,7 +42,7 @@ const VALID_FILE_TYPES = [
 ];
 
 const VALID_FILE_NOTIFY_CONDITIONS = [
-	'app', 'account'
+	'app', 'account', 'app,account'
 ];
 
 export function fileErrCallback(response: Response) {
