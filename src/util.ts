@@ -4,6 +4,7 @@ import { createChannel, createClient, Metadata } from 'nice-grpc';
 import { AccountDefinition } from '@pretendonetwork/grpc/account/account_service';
 import { FriendsDefinition } from '@pretendonetwork/grpc/friends/friends_service';
 import { config } from '@/config-manager';
+import { VALID_FILE_NOTIFY_CONDITIONS } from '@/constants';
 import { logger } from './logger';
 import type { FriendsClient } from '@pretendonetwork/grpc/friends/friends_service';
 import type { AccountClient } from '@pretendonetwork/grpc/account/account_service';
@@ -39,10 +40,6 @@ const VALID_LANGUAGES = [
 
 const VALID_FILE_TYPES = [
 	'Message', 'AppData'
-];
-
-const VALID_FILE_NOTIFY_CONDITIONS = [
-	'app', 'account', 'app,account'
 ];
 
 export function fileErrCallback(response: Response) {

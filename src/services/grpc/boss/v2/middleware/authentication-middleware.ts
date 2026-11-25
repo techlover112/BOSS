@@ -29,6 +29,11 @@ export async function* authenticationMiddleware<Request, Response>(
 			user
 		});
 	} catch (error) {
+		// * Errors that already carry a status (PERMISSION_DENIED, ALREADY_EXISTS, INTERNAL, ...) keep it
+		if (error instanceof ServerError) {
+			throw error;
+		}
+
 		let message: string = 'Unknown server error';
 
 		console.log(error);

@@ -1,7 +1,9 @@
 import { ServerError, Status } from 'nice-grpc';
-import { getTask } from '@/database';
+import { getPolicyListMajorVersion, getTask, reconcileTaskPolicyLists } from '@/database';
+import { getDefaultTaskPolicyLevel, getTaskPolicyLevelError, TASK_POLICY_LEVEL_METADATA_KEY } from '@/constants';
 import { Task } from '@/models/task';
 import { hasPermission } from '@/services/grpc/boss/v2/middleware/authentication-middleware';
+import type { TaskPolicyLevel } from '@/constants';
 import type { AuthenticationCallContextExt } from '@/services/grpc/boss/v2/middleware/authentication-middleware';
 import type { CallContext } from 'nice-grpc';
 import type { RegisterTaskRequest, RegisterTaskResponse } from '@pretendonetwork/grpc/boss/v2/register_task';
@@ -44,6 +46,18 @@ export async function registerTask(request: RegisterTaskRequest, context: CallCo
 		throw new ServerError(Status.INVALID_ARGUMENT, `Status ${status} is invalid`);
 	}
 
+	const requestedPolicyLevel = context.metadata.get(TASK_POLICY_LEVEL_METADATA_KEY)?.trim().toUpperCase();
+	const policyLevel = (requestedPolicyLevel || getDefaultTaskPolicyLevel(status)) as TaskPolicyLevel;
+	const policyLevelError = getTaskPolicyLevelError(status, policyLevel);
+
+	if (policyLevelError) {
+		throw new ServerError(Status.INVALID_ARGUMENT, policyLevelError);
+	}
+
+	if (getPolicyListMajorVersion(titleID) === null) {
+		throw new ServerError(Status.INVALID_ARGUMENT, `Title ID ${titleID} is not a Wii U or 3DS title ID, so the task cannot be added to the NPPL`);
+	}
+
 	// * BOSS tasks have 2 IDs
 	// * - 1: The ID which is registered in-game
 	// * - 2: The ID which is registered on the server
@@ -61,11 +75,33 @@ export async function registerTask(request: RegisterTaskRequest, context: CallCo
 		creator_pid: context.user?.pid,
 		status,
 		interval,
+		policy_level: policyLevel,
 		title_id: titleID,
 		description: description,
 		created: Date.now(),
 		updated: Date.now()
 	});
+
+	try {
+		await reconcileTaskPolicyLists(task);
+	} catch (error) {
+		// * Don't leave behind a task that the NPPL doesn't know about. Reconciling again once the task
+		// * is gone puts back the key's built-in default, or removes the entry (if this fails too, the
+		// * scheduled sync will). An entry added or edited by hand that the task replaced is not restored
+		const message = error instanceof Error ? error.message : 'Unknown error';
+		let removed = true;
+
+		await task.deleteOne().catch(() => {
+			removed = false;
+		});
+
+		if (removed) {
+			await reconcileTaskPolicyLists(task).catch(() => {});
+			throw new ServerError(Status.INTERNAL, `Failed to add task ${taskID} to the NPPL, so it was not registered: ${message}`);
+		}
+
+		throw new ServerError(Status.INTERNAL, `Failed to add task ${taskID} to the NPPL: ${message}. The task could not be removed again, so it may still exist; the scheduled NPPL sync will add it to the NPPL`);
+	}
 
 	return {
 		task: {

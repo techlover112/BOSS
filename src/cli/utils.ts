@@ -2,6 +2,7 @@ import { BossServiceDefinition } from '@pretendonetwork/grpc/boss/v2/boss_servic
 import { createChannel, createClient, Metadata } from 'nice-grpc';
 import dotenv from 'dotenv';
 import type { BossServiceClient } from '@pretendonetwork/grpc/boss/v2/boss_service';
+import type { CallOptions } from 'nice-grpc';
 import type { Command } from 'commander';
 import type { FormatOption } from './output';
 
@@ -18,6 +19,8 @@ export type NpdlUrl = {
 
 export type CliContext = {
 	grpc: BossServiceClient;
+	// * Per-call options replace the client's default options, so this keeps the API key alongside the extra metadata
+	callOptions: (extraMetadata: Record<string, string>) => CallOptions;
 	getNpdiUrl: () => NpdiUrl;
 	getNpdlUrl: () => NpdlUrl;
 	getWiiUKeys: () => WiiUKeys;
@@ -47,6 +50,14 @@ export function getCliContext(): CliContext {
 
 	return {
 		grpc: client,
+		callOptions(extraMetadata: Record<string, string>): CallOptions {
+			return {
+				metadata: new Metadata({
+					...extraMetadata,
+					'X-API-Key': grpcKey
+				})
+			};
+		},
 		getNpdiUrl(): NpdiUrl {
 			const npdiUrl = process.env.PN_BOSS_CLI_NPDI_URL ?? 'https://npdi.cdn.pretendo.cc';
 			const npdiHost = process.env.PN_BOSS_CLI_NPDI_HOST ?? new URL(npdiUrl).host;

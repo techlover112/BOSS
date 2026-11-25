@@ -1,4 +1,5 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
+import { getDefaultTaskPolicyLevel, getTaskPolicyLevelError, TASK_POLICY_LEVEL_METADATA_KEY, TASK_POLICY_LEVELS } from '../constants';
 import { commandHandler, getCliContext } from './utils';
 import { logOutputList, logOutputObject } from './output';
 
@@ -57,23 +58,33 @@ const createCmd = new Command('create')
 	.option('--status [status]', 'Initial status of the task')
 	.option('--interval [interval]', 'Interval of the task')
 	.option('--desc [desc]', 'Description of the task')
+	.addOption(new Option('--priority <priority>', 'NPPL priority of the task. Any level except STOPPED for open tasks (default EXPEDITE), only STOPPED for closed tasks (default STOPPED)')
+		.choices(TASK_POLICY_LEVELS)
+		.argParser(value => value.toUpperCase()))
 	.action(commandHandler<[string]>(async (cmd): Promise<void> => {
 		const [appId] = cmd.args;
+		const opts = cmd.opts<{ id: string; titleId: string; status?: string; interval?: string; desc?: string; priority?: string }>();
+		const status = opts.status ?? 'open';
+		const priority = opts.priority ?? getDefaultTaskPolicyLevel(status);
+		const priorityError = getTaskPolicyLevelError(status, priority);
+		if (priorityError) {
+			console.error(priorityError);
+			process.exit(1);
+		}
 		const ctx = getCliContext();
-		const opts = cmd.opts<{ id: string; titleId: string; status?: string; interval?: string; desc?: string }>();
 		const { task } = await ctx.grpc.registerTask({
 			bossAppId: appId,
 			id: opts.id,
 			titleId: BigInt(parseInt(opts.titleId, 16)),
-			status: opts.status ?? 'open',
+			status,
 			interval: Number(opts.interval ?? 0),
 			description: opts.desc ?? ''
-		});
+		}, ctx.callOptions({ [TASK_POLICY_LEVEL_METADATA_KEY]: priority }));
 		if (!task) {
 			console.log(`Failed to create task!`);
 			return;
 		}
-		console.log(`Created task with ID ${task.id}`);
+		console.log(`Created task with ID ${task.id} (NPPL priority ${priority})`);
 	}));
 
 const deleteCmd = new Command('delete')

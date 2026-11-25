@@ -1,9 +1,14 @@
 import xmlbuilder from 'xmlbuilder';
 import moment from 'moment';
 import express from 'express';
-import { config, disabledFeatures } from '@/config-manager';
+import mongoose from 'mongoose';
+import { config } from '@/config-manager';
+import { getDefaultPolicyList } from '@/policy-list-defaults';
 import { restrictHostnames } from '@/middleware/host-limit';
-import { PolicyList } from '../models/policy-list';
+import { PolicyList } from '@/models/policy-list';
+import { getTaskPolicyListPriorities, syncPolicyListTasks } from '@/database';
+import type { IPolicyListPriority } from '@/types/mongoose/policy-list';
+import type { PolicyList as PolicyListXML } from '@/types/common/policylist';
 
 const nppl = express.Router();
 
@@ -28,158 +33,47 @@ nppl.get([
 		return;
 	}
 
-	let defaultPolicyList;
-
-	if (consoleType === '0') {
-		// Original 3DS policy list defaults
-		defaultPolicyList = {
-			country_code: countryCode,
-			major_version: Number(majorVersion),
-			list_id: 1891,
-			default_stop: false,
-			force_version_up: false,
-			priority: [
-				{
-					title_id: '0004003000008f02',
-					task_id: 'basho0',
-					level: 'HIGH',
-					persistent: true,
-					revive: true
-				},
-				{
-					title_id: '000400300000bc00',
-					task_id: 'OlvNotf',
-					level: 'HIGH',
-					persistent: true,
-					revive: true
-				},
-				{
-					title_id: '000400300000bd00',
-					task_id: 'OlvNotf',
-					level: 'HIGH',
-					persistent: true,
-					revive: true
-				},
-				{
-					title_id: '000400300000be00',
-					task_id: 'OlvNotf',
-					level: 'HIGH',
-					persistent: true,
-					revive: true
-				},
-				{
-					title_id: '0004003000008f02',
-					task_id: 'pl',
-					level: 'HIGH',
-					persistent: true,
-					revive: true
-				},
-				{
-					title_id: '0004013000003400',
-					task_id: 'sprelay',
-					level: disabledFeatures.spr ? 'STOPPED' : 'HIGH',
-					persistent: true,
-					revive: true
-				}
-			],
-			updated: Date.now()
-		};
-	} else {
-		// Original Wii U policy list defaults
-		defaultPolicyList = {
-			country_code: countryCode,
-			major_version: Number(majorVersion),
-			list_id: 1924,
-			default_stop: false,
-			force_version_up: false,
-			priority: [
-				{
-					title_id: '0005003010016000',
-					task_id: 'olvinfo',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '0005003010016100',
-					task_id: 'olvinfo',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '0005003010016200',
-					task_id: 'olvinfo',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '000500301001600a',
-					task_id: 'olv1',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '000500301001610a',
-					task_id: 'olv1',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '000500301001620a',
-					task_id: 'olv1',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '0005001010040000',
-					task_id: 'oltopic',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '0005001010040100',
-					task_id: 'oltopic',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '0005001010040200',
-					task_id: 'oltopic',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '000500101005a000',
-					task_id: 'Chat',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '000500101005a100',
-					task_id: 'Chat',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '000500101005a200',
-					task_id: 'Chat',
-					level: 'EXPEDITE'
-				},
-				{
-					title_id: '000500101004c100',
-					task_id: 'plog',
-					level: 'EXPEDITE'
-				}
-			],
-			updated: Date.now()
-		};
-	}
+	const defaultPolicyList = getDefaultPolicyList(countryCode, Number(majorVersion));
 
 	try {
-		const policyDoc = await PolicyList.findOneAndUpdate(
-			{
-				country_code: countryCode,
-				major_version: Number(majorVersion)
-			},
-			{
-				$setOnInsert: defaultPolicyList
-			},
-			{
-				upsert: true,
-				new: true,
-				setDefaultsOnInsert: true
-			}
-		);
+		const filter = {
+			country_code: countryCode,
+			major_version: Number(majorVersion)
+		};
 
-		const policylist = {
+		let policyDoc = await PolicyList.findOne(filter);
+
+		if (!policyDoc) {
+			// * Existing lists get new tasks pushed to them by addTaskToPolicyLists, new lists
+			// * start with every registered task. Registered tasks override the hardcoded
+			// * defaults for the same title and task
+			const taskPriorities = await getTaskPolicyListPriorities(defaultPolicyList.major_version);
+			const isOverridden = (p: IPolicyListPriority): boolean => taskPriorities.some(t => t.title_id === p.title_id && t.task_id === p.task_id);
+			defaultPolicyList.priority = [...defaultPolicyList.priority.filter(p => !isOverridden(p)), ...taskPriorities];
+
+			try {
+				await PolicyList.updateOne(filter, { $setOnInsert: defaultPolicyList }, { upsert: true, setDefaultsOnInsert: true });
+			} catch (error) {
+				// * Another request created this list at the same time, which is fine
+				if (!(error instanceof mongoose.mongo.MongoServerError && error.code === 11000)) {
+					throw error;
+				}
+			}
+
+			policyDoc = await PolicyList.findOne(filter);
+		}
+
+		// * Also covers lists stored before tasks were added to the NPPL
+		if (policyDoc && !policyDoc.tasks_synced) {
+			await syncPolicyListTasks(countryCode, policyDoc.major_version);
+			policyDoc = await PolicyList.findOne(filter);
+		}
+
+		if (!policyDoc) {
+			throw new Error(`Failed to create policy list for ${countryCode} (major version ${majorVersion})`);
+		}
+
+		const policylist: { PolicyList: PolicyListXML } = {
 			PolicyList: {
 				MajorVersion: policyDoc.major_version,
 				MinorVersion: 0,
@@ -187,14 +81,18 @@ nppl.get([
 				DefaultStop: policyDoc.default_stop,
 				ForceVersionUp: policyDoc.force_version_up,
 				UpdateTime: moment(Number(policyDoc.updated)).utc().format('YYYY-MM-DDTHH:MM:SS+0000'),
-				Priority: policyDoc.priority.map((p: any) => {
-					const entry: any = {
+				Priority: policyDoc.priority.map((p) => {
+					const entry: PolicyListXML['Priority'][number] = {
 						TitleId: p.title_id,
 						TaskId: p.task_id,
-						Level: p.level
+						Level: p.level as PolicyListXML['Priority'][number]['Level']
 					};
-					if (p.persistent !== undefined) entry.Persistent = p.persistent;
-					if (p.revive !== undefined) entry.Revive = p.revive;
+					if (p.persistent !== undefined && p.persistent !== null) {
+						entry.Persistent = p.persistent;
+					}
+					if (p.revive !== undefined && p.revive !== null) {
+						entry.Revive = p.revive;
+					}
 					return entry;
 				})
 			}

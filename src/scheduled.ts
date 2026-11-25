@@ -1,6 +1,6 @@
 import { CronJob } from 'cron';
 import { logger } from './logger';
-import { deleteOldCECData } from './database';
+import { deleteOldCECData, reconcileAllPolicyLists } from './database';
 import { config } from './config-manager';
 import { bulkDeleteCdnFiles } from './cdn';
 
@@ -26,6 +26,11 @@ async function runCleanSprData(): Promise<void> {
 	logger.success(`Completed cleanup of ${totalRemoved}`);
 }
 
+async function runSyncPolicyLists(): Promise<void> {
+	const count = await reconcileAllPolicyLists();
+	logger.info(`Reconciled ${count} NPPL entries with their tasks`);
+}
+
 function registerSchedule(schedule: string, name: string, fn: () => void | Promise<void>): void {
 	CronJob.from({
 		cronTime: schedule,
@@ -37,12 +42,16 @@ function registerSchedule(schedule: string, name: string, fn: () => void | Promi
 				logger.error(`Error in schedule ${name}: ${err}`);
 			}
 		},
-		start: true
+		start: true,
+		waitForCompletion: true
 	});
 	logger.info(`Added schedule ${name} for ${schedule}`);
 }
 
 export async function setupScheduler(): Promise<void> {
+	// * Repairs NPPL entries left out of date by a task write that failed part way
+	registerSchedule('15 * * * *', 'sync-nppl', runSyncPolicyLists);
+
 	if (config.spr.cleanOldData) {
 		registerSchedule('0 2 * * *', 'clean-spr-data', runCleanSprData);
 	}
