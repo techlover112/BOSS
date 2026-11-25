@@ -1,4 +1,5 @@
 import type { Model, HydratedDocument } from 'mongoose';
+import type { TaskPolicyLevel } from '@/constants';
 
 export interface ITask {
 	deleted: boolean;
@@ -8,6 +9,7 @@ export interface ITask {
 	creator_pid: number;
 	status: 'open' | 'close';
 	interval: number;
+	policy_level?: TaskPolicyLevel; // * Unset on tasks registered before tasks were added to the NPPL
 	title_id: string;
 	description: string;
 	created: bigint;

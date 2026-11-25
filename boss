@@ -1,2 +1,68 @@
-#!/bin/bash
-exec node --enable-source-maps dist/cli/cli.js $*
+#!/usr/bin/env bash
+# Runs the BOSS CLI. dist/ is not committed, so rebuild the CLI whenever it is
+# missing or older than the source, so the CLI always matches src/.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cli="$root/dist/cli/cli.js"
+
+needs_build() {
+	# Deployments such as the Docker image ship dist/ without src/, so there is nothing to rebuild from
+	[ -d "$root/src" ] || return 1
+	[ -f "$cli" ] || return 0
+
+	local paths=("$root/src")
+	local path
+	for path in "$root/package.json" "$root/tsup.config.ts"; do
+		[ -e "$path" ] && paths+=("$path")
+	done
+
+	[ -n "$(find "${paths[@]}" -newer "$cli" -print -quit)" ]
+}
+
+build_cli() {
+	if [ ! -x "$root/node_modules/.bin/tsup" ]; then
+		echo "BOSS CLI: cannot rebuild, tsup is not installed (run 'npm ci' in $root)" >&2
+		return 1
+	fi
+
+	# Build only the CLI, so a broken server file or a failed build never touches
+	# dist/server.js. Each run builds into its own staging folder at the same depth
+	# as dist/cli (so source map paths stay valid), then moves the files over one at
+	# a time. A rename is atomic, so dist/cli/cli.js always exists, and runs that
+	# finish together just overwrite it with the same output.
+	mkdir -p "$root/dist"
+	local staging
+	staging="$(mktemp -d "$root/dist/.cli-build.XXXXXX")"
+
+	echo "BOSS CLI: source changed, rebuilding..." >&2
+	if ! (cd "$root" && npx --no-install tsup src/cli/cli.ts --no-config --format cjs --platform node --sourcemap --out-dir "$staging") >&2; then
+		rm -rf "$staging"
+		echo "BOSS CLI: build failed" >&2
+		return 1
+	fi
+
+	mkdir -p "$root/dist/cli"
+	if ! { mv -f "$staging/cli.js.map" "$root/dist/cli/" && mv -f "$staging/cli.js" "$root/dist/cli/"; }; then
+		rm -rf "$staging"
+		echo "BOSS CLI: could not move the new build into dist/cli" >&2
+		return 1
+	fi
+	rm -rf "$staging"
+}
+
+if needs_build && ! build_cli; then
+	if [ ! -f "$cli" ]; then
+		echo "BOSS CLI: there is no previous build to fall back to" >&2
+		exit 1
+	fi
+	echo "BOSS CLI: running the previous build instead" >&2
+fi
+
+if [ ! -f "$cli" ]; then
+	echo "BOSS CLI: $cli is missing and there is no src/ to build it from" >&2
+	exit 1
+fi
+
+# Build output goes to stderr above, so commands like 'file download' can still pipe stdout
+exec node --enable-source-maps "$cli" "$@"

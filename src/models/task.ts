@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { TASK_POLICY_LEVELS } from '@/constants';
 import type { ITask, ITaskMethods, TaskModel } from '@/types/mongoose/task';
 
 const TaskSchema = new mongoose.Schema<ITask, TaskModel, ITaskMethods>({
@@ -16,6 +17,10 @@ const TaskSchema = new mongoose.Schema<ITask, TaskModel, ITaskMethods>({
 		enum: ['open', 'close']
 	},
 	interval: Number,
+	policy_level: {
+		type: String,
+		enum: TASK_POLICY_LEVELS
+	},
 	title_id: String,
 	description: String,
 	created: BigInt,
@@ -23,5 +28,6 @@ const TaskSchema = new mongoose.Schema<ITask, TaskModel, ITaskMethods>({
 }, { id: false });
 
 TaskSchema.index({ boss_app_id: 1, id: 1 });
+TaskSchema.index({ title_id: 1, id: 1 });
 
 export const Task = mongoose.model<ITask, TaskModel>('Task', TaskSchema);

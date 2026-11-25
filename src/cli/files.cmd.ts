@@ -2,9 +2,10 @@ import fs from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { request } from 'undici';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { decryptWiiU } from '@pretendonetwork/boss-crypto';
 import { PlatformType } from '@pretendonetwork/grpc/boss/v2/platform_type';
+import { VALID_FILE_NOTIFY_CONDITIONS } from '../constants';
 import { commandHandler, getCliContext } from './utils';
 import { logOutputList, logOutputObject } from './output';
 
@@ -137,7 +138,7 @@ const createCmd = new Command('create')
 	.option('--attribute3 [attribute3]', 'Attribute 3 for this task file')
 	.option('--desc [desc]', 'Description for this task file')
 	.option('--name-as-id', 'Force the name as the data ID')
-	.option('--notify-new <type...>', 'Add entry to NotifyNew')
+	.addOption(new Option('--notify-new <type...>', 'Add entry to NotifyNew').choices(VALID_FILE_NOTIFY_CONDITIONS))
 	.option('--notify-led', 'Enable NotifyLED')
 	.action(commandHandler<[string, string]>(async (cmd): Promise<void> => {
 		const [appId, taskId] = cmd.args;

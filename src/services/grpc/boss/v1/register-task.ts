@@ -1,7 +1,9 @@
 import { ServerError, Status } from 'nice-grpc';
-import { getTask } from '@/database';
+import { getPolicyListMajorVersion, getTask, reconcileTaskPolicyLists } from '@/database';
+import { getDefaultTaskPolicyLevel, getTaskPolicyLevelError, normalizeTitleID, TASK_POLICY_LEVEL_METADATA_KEY } from '@/constants';
 import { Task } from '@/models/task';
 import { hasPermission } from '@/services/grpc/boss/v1/middleware/authentication-middleware';
+import type { TaskPolicyLevel } from '@/constants';
 import type { AuthenticationCallContextExt } from '@/services/grpc/boss/v1/middleware/authentication-middleware';
 import type { CallContext } from 'nice-grpc';
 import type { RegisterTaskRequest, RegisterTaskResponse } from '@pretendonetwork/grpc/boss/register_task';
@@ -15,7 +17,7 @@ export async function registerTask(request: RegisterTaskRequest, context: CallCo
 
 	const taskID = request.id.trim();
 	const bossAppID = request.bossAppId.trim();
-	const titleID = request.titleId.trim().toLocaleLowerCase();
+	const titleID = normalizeTitleID(request.titleId);
 	const description = request.description.trim();
 
 	if (!taskID) {
@@ -34,8 +36,28 @@ export async function registerTask(request: RegisterTaskRequest, context: CallCo
 		throw new ServerError(Status.INVALID_ARGUMENT, 'BOSS app ID must only contain letters and numbers');
 	}
 
+	if (!request.titleId.trim()) {
+		throw new ServerError(Status.INVALID_ARGUMENT, 'Missing title ID');
+	}
+
+	if (!titleID) {
+		throw new ServerError(Status.INVALID_ARGUMENT, 'Title ID must be up to 16 hexadecimal characters');
+	}
+
 	if (await getTask(bossAppID, taskID)) {
 		throw new ServerError(Status.ALREADY_EXISTS, `Task ${taskID} already exists for BOSS app ${bossAppID}`);
+	}
+
+	const requestedPolicyLevel = context.metadata.get(TASK_POLICY_LEVEL_METADATA_KEY)?.trim().toUpperCase();
+	const policyLevel = (requestedPolicyLevel || getDefaultTaskPolicyLevel('open')) as TaskPolicyLevel;
+	const policyLevelError = getTaskPolicyLevelError('open', policyLevel);
+
+	if (policyLevelError) {
+		throw new ServerError(Status.INVALID_ARGUMENT, policyLevelError);
+	}
+
+	if (getPolicyListMajorVersion(titleID) === null) {
+		throw new ServerError(Status.INVALID_ARGUMENT, `Title ID ${titleID} is not a Wii U or 3DS title ID, so the task cannot be added to the NPPL`);
 	}
 
 	// * BOSS tasks have 2 IDs
@@ -54,11 +76,33 @@ export async function registerTask(request: RegisterTaskRequest, context: CallCo
 		boss_app_id: bossAppID,
 		creator_pid: context.user?.pid,
 		status: 'open',
+		policy_level: policyLevel,
 		title_id: titleID,
 		description: description,
 		created: Date.now(),
 		updated: Date.now()
 	});
+
+	try {
+		await reconcileTaskPolicyLists(task);
+	} catch (error) {
+		// * Don't leave behind a task that the NPPL doesn't know about. Reconciling again once the task
+		// * is gone puts back the key's built-in default, or removes the entry (if this fails too, the
+		// * scheduled sync will). An entry added or edited by hand that the task replaced is not restored
+		const message = error instanceof Error ? error.message : 'Unknown error';
+		let removed = true;
+
+		await task.deleteOne().catch(() => {
+			removed = false;
+		});
+
+		if (removed) {
+			await reconcileTaskPolicyLists(task).catch(() => {});
+			throw new ServerError(Status.INTERNAL, `Failed to add task ${taskID} to the NPPL, so it was not registered: ${message}`);
+		}
+
+		throw new ServerError(Status.INTERNAL, `Failed to add task ${taskID} to the NPPL: ${message}. The task could not be removed again, so it may still exist; the scheduled NPPL sync will add it to the NPPL`);
+	}
 
 	return {
 		task: {

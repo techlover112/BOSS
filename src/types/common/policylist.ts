@@ -1,4 +1,6 @@
-type TaskLevel = 'STOPPED' | 'HIGH' | 'EXPEDITE'; // TODO - Find all of these and document their uses
+import type { TaskPolicyLevel } from '@/constants';
+
+type TaskLevel = TaskPolicyLevel;
 
 export type PolicyList = {
 	MajorVersion: number;
